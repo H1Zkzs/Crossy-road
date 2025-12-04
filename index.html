@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mini Crossy Road — Harder Hard Difficulty</title>
+<style>
+html,body{height:100%;margin:0;font-family:Inter,Segoe UI,system-ui,Arial;overflow:hidden;background:#222;}
+canvas{display:block;}
+#hud{position:absolute;top:10px;left:10px;color:#fff;font-weight:700;font-size:18px;z-index:10;}
+#controls{position:absolute;top:10px;right:10px;z-index:10;}
+#controls select,#controls button{padding:6px 10px;margin-left:5px;border-radius:6px;border:none;background:#444;color:#fff;cursor:pointer;}
+</style>
+</head>
+<body>
+<div id="hud">Score: 0</div>
+<div id="controls">
+  <select id="difficulty">
+    <option value="easy">Easy</option>
+    <option value="medium" selected>Medium</option>
+    <option value="hard">Hard</option>
+  </select>
+  <button id="restart">Restart</button>
+</div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('hud');
+const difficultyEl = document.getElementById('difficulty');
+
+let CELL = 60;
+let WIDTH = window.innerWidth;
+let HEIGHT = window.innerHeight;
+canvas.width = WIDTH;
+canvas.height = HEIGHT;
+let COLUMNS = Math.floor(WIDTH/CELL);
+let ROWS_VISIBLE = Math.floor(HEIGHT/CELL);
+
+let game;
+
+function rnd(a,b){return Math.random()*(b-a)+a}
+function randint(a,b){return Math.floor(rnd(a,b+1))}
+
+class Player{
+  constructor(){this.reset();}
+  reset(){
+    this.col = Math.floor(COLUMNS/2);
+    this.row = ROWS_VISIBLE-1; 
+    this.x = this.col*CELL + CELL/2;
+    this.y = this.row*CELL + CELL/2;
+    this.size = 40;
+    this.alive = true;
+  }
+  draw(){
+    ctx.fillStyle="#2b8a3e";
+    ctx.fillRect(this.x-20,this.y-20,40,40);
+  }
+  move(d){
+    if(!this.alive) return;
+    if(d==="up" && this.row>0){this.row--; this.y=this.row*CELL+CELL/2; game.onUp();}
+    if(d==="down" && this.row<ROWS_VISIBLE-1){this.row++; this.y=this.row*CELL+CELL/2;}
+    if(d==="left" && this.col>0){this.col--; this.x=this.col*CELL+CELL/2;}
+    if(d==="right" && this.col<COLUMNS-1){this.col++; this.x=this.col*CELL+CELL/2;}
+  }
+}
+
+class Car{
+  constructor(x,y,w,h,s,dir,c,lane){
+    this.x=x; this.y=y; this.w=w; this.h=h;
+    this.speed=s; this.dir=dir; this.color=c;
+    this.lane=lane;
+  }
+  update(dt){ this.x += this.speed*dt*(this.dir==="right"?1:-1); }
+  draw(){ ctx.fillStyle=this.color; ctx.fillRect(this.x,this.y-this.h/2,this.w,this.h);}
+  rect(){return{x:this.x,y:this.y-this.h/2,w:this.w,h:this.h}}
+}
+
+class Game{
+  constructor(){this.init();}
+  init(){
+    this.player=new Player();
+    this.lanes=[];
+    this.cars=[];
+    this.score=0;
+    this.gameOver=false;
+    this.setDifficulty(difficultyEl.value);
+    this.generateMap(true);  // spawn cars in middle initially
+    scoreEl.textContent="Score: 0";
+  }
+
+  setDifficulty(level){
+    if(level==="easy"){ this.baseSpeed=100; this.spawnGap=1.5; }
+    else if(level==="medium"){ this.baseSpeed=160; this.spawnGap=1.0; }
+    else if(level==="hard"){ 
+      this.baseSpeed=300;  // much faster than before
+      this.spawnGap=0.5;   // cars closer together
+    }
+  }
+
+  generateMap(initial=false){
+    this.lanes = [];
+    this.cars = [];
+    for(let r=0;r<ROWS_VISIBLE-1;r++){
+      let speedFactor = 1 + this.score*0.05; // 5% faster per level
+      let type = (Math.random() < 0.25 + this.score*0.02) ? "safe":"road";
+      let speed=rnd(this.baseSpeed, this.baseSpeed*1.5)*speedFactor;
+      let dir=Math.random()<0.5?"left":"right";
+      this.lanes.push({row:r,type,speed,dir,car:null});
+
+      if(initial && type==="road"){
+        let y = r*CELL + CELL/2;
+        let h = 40;
+        let w = randint(80,160);
+        let x = randint(WIDTH/4, 3*WIDTH/4);
+        let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
+        let car = new Car(x,y,w,h,speed,dir,color,this.lanes[r]);
+        this.lanes[r].car = car;
+        this.cars.push(car);
+      }
+    }
+    this.lanes.push({row:ROWS_VISIBLE-1,type:"safe",speed:0,dir:"right",car:null});
+  }
+
+  update(dt){
+    if(this.gameOver) return;
+
+    for(let lane of this.lanes){
+      if(lane.type==="road" && !lane.car){
+        this.spawnCarInLane(lane);
+      }
+    }
+
+    for(let c of this.cars) c.update(dt);
+
+    this.cars=this.cars.filter(c=>{
+      let visible = c.x + c.w > -50 && c.x < WIDTH+50 && c.y < (ROWS_VISIBLE-1)*CELL;
+      if(!visible) c.lane.car=null;
+      return visible;
+    });
+
+    for(let car of this.cars){
+      let p={x:this.player.x-20,y:this.player.y-20,w:40,h:40};
+      if(this.intersect(car.rect(),p)) this.hit();
+    }
+  }
+
+  spawnCarInLane(lane){
+    let y = lane.row*CELL+CELL/2;
+    let h = 40;
+    let w = randint(80,160);
+    let dir = lane.dir;
+    let x = dir==="right"?-w-10:WIDTH+10;
+    let speed = lane.speed * rnd(0.8,1.4);
+    let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
+    let car = new Car(x,y,w,h,speed,dir,color,lane);
+    lane.car = car;
+    this.cars.push(car);
+  }
+
+  onUp(){
+    if(this.player.row===0){
+      this.score++;
+      scoreEl.textContent="Score: "+this.score;
+      this.generateMap(true);
+      this.player.reset();
+    }
+  }
+
+  hit(){
+    this.player.alive=false;
+    this.gameOver=true;
+    scoreEl.textContent="Hit! Score: "+this.score+" — Restart to play again";
+  }
+
+  intersect(a,b){
+    return !(a.x+a.w<b.x || b.x+b.w<a.x || a.y+a.h<b.y || b.y+b.h<a.y)
+  }
+
+  draw(){
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0,0,WIDTH,HEIGHT);
+
+    for(let ln of this.lanes){
+      let y=ln.row*CELL;
+      ctx.fillStyle=ln.type==="safe"?"#8fdc7a":"#444";
+      ctx.fillRect(0,y,WIDTH,CELL);
+    }
+
+    for(let c of this.cars) c.draw();
+    this.player.draw();
+  }
+}
+
+function loop(t){
+  const dt=Math.min(0.05,(t-(game.lastTime||t))/1000);
+  game.lastTime=t;
+  game.update(dt);
+  ctx.clearRect(0,0,WIDTH,HEIGHT);
+  game.draw();
+  requestAnimationFrame(loop);
+}
+
+game=new Game();
+requestAnimationFrame(loop);
+
+window.addEventListener('resize',()=>{
+  WIDTH = window.innerWidth;
+  HEIGHT = window.innerHeight;
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  COLUMNS = Math.floor(WIDTH/CELL);
+  ROWS_VISIBLE = Math.floor(HEIGHT/CELL);
+  game.generateMap(true);
+  game.player.reset();
+});
+
+let keysPressed = {};
+document.addEventListener("keydown", e => {
+  if(keysPressed[e.key]) return;
+  keysPressed[e.key] = true;
+  if(e.key==="ArrowUp"||e.key==="w") game.player.move("up");
+  if(e.key==="ArrowDown"||e.key==="s") game.player.move("down");
+  if(e.key==="ArrowLeft"||e.key==="a") game.player.move("left");
+  if(e.key==="ArrowRight"||e.key==="d") game.player.move("right");
+});
+document.addEventListener("keyup", e => { keysPressed[e.key] = false; });
+
+document.getElementById("restart").onclick=()=>{
+  game.setDifficulty(difficultyEl.value);
+  game=new Game();
+};
+
+difficultyEl.addEventListener("change", ()=>{
+  game.setDifficulty(difficultyEl.value);
+});
+</script>
+</body>
+</html>
