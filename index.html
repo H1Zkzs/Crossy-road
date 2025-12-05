@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Mini Crossy Road — Harder Hard Difficulty</title>
+<title>Mini Crossy Road — With Trains and Trees (Stable)</title>
 <style>
 html,body{height:100%;margin:0;font-family:Inter,Segoe UI,system-ui,Arial;overflow:hidden;background:#222;}
 canvas{display:block;}
@@ -24,18 +24,25 @@ canvas{display:block;}
 </div>
 <canvas id="c"></canvas>
 <script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const scoreEl = document.getElementById('hud');
-const difficultyEl = document.getElementById('difficulty');
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const scoreEl=document.getElementById('hud');
+const difficultyEl=document.getElementById('difficulty');
 
-let CELL = 60;
-let WIDTH = window.innerWidth;
-let HEIGHT = window.innerHeight;
-canvas.width = WIDTH;
-canvas.height = HEIGHT;
-let COLUMNS = Math.floor(WIDTH/CELL);
-let ROWS_VISIBLE = Math.floor(HEIGHT/CELL);
+let CELL=60;
+let WIDTH=window.innerWidth;
+let HEIGHT=window.innerHeight;
+// clamp grid sizes so huge screens don't create enormous grids
+const MAX_COLUMNS = 30;    // max number of columns to allow (keeps trees/cells reasonable)
+const MIN_COLUMNS = 6;     // minimum columns
+const MAX_ROWS = 20;
+const MIN_ROWS = 6;
+
+let COLUMNS=Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
+let ROWS_VISIBLE=Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
+
+canvas.width=WIDTH;
+canvas.height=HEIGHT;
 
 let game;
 
@@ -45,113 +52,245 @@ function randint(a,b){return Math.floor(rnd(a,b+1))}
 class Player{
   constructor(){this.reset();}
   reset(){
-    this.col = Math.floor(COLUMNS/2);
-    this.row = ROWS_VISIBLE-1; 
-    this.x = this.col*CELL + CELL/2;
-    this.y = this.row*CELL + CELL/2;
-    this.size = 40;
-    this.alive = true;
+    this.col=Math.floor(COLUMNS/2);
+    this.row=ROWS_VISIBLE-1;
+    this.x=this.col*CELL+CELL/2;
+    this.y=this.row*CELL+CELL/2;
+    this.size=40;
+    this.alive=true;
   }
   draw(){
     ctx.fillStyle="#2b8a3e";
     ctx.fillRect(this.x-20,this.y-20,40,40);
+    // eyes
+    ctx.fillStyle="#fff";
+    ctx.fillRect(this.x-10,this.y-10,6,6);
+    ctx.fillRect(this.x+4,this.y-10,6,6);
+    ctx.fillStyle="#000";
+    ctx.fillRect(this.x-8,this.y-8,2,2);
+    ctx.fillRect(this.x+6,this.y-8,2,2);
   }
   move(d){
     if(!this.alive) return;
-    if(d==="up" && this.row>0){this.row--; this.y=this.row*CELL+CELL/2; game.onUp();}
-    if(d==="down" && this.row<ROWS_VISIBLE-1){this.row++; this.y=this.row*CELL+CELL/2;}
-    if(d==="left" && this.col>0){this.col--; this.x=this.col*CELL+CELL/2;}
-    if(d==="right" && this.col<COLUMNS-1){this.col++; this.x=this.col*CELL+CELL/2;}
+    let newCol=this.col,newRow=this.row;
+    if(d==="up"&&this.row>0) newRow--;
+    if(d==="down"&&this.row<ROWS_VISIBLE-1) newRow++;
+    if(d==="left"&&this.col>0) newCol--;
+    if(d==="right"&&this.col<COLUMNS-1) newCol++;
+
+    // Tree collision (trees are stored by grid col/row)
+    for(let tree of game.trees){
+      if(tree.row===newRow && tree.col===newCol) return; // blocked
+    }
+
+    this.col=newCol;
+    this.row=newRow;
+    this.x=this.col*CELL+CELL/2;
+    this.y=this.row*CELL+CELL/2;
+    if(d==="up") game.onUp();
   }
 }
 
 class Car{
   constructor(x,y,w,h,s,dir,c,lane){
-    this.x=x; this.y=y; this.w=w; this.h=h;
-    this.speed=s; this.dir=dir; this.color=c;
+    this.x=x;this.y=y;this.w=w;this.h=h;
+    this.speed=s;this.dir=dir;this.color=c;
     this.lane=lane;
   }
-  update(dt){ this.x += this.speed*dt*(this.dir==="right"?1:-1); }
-  draw(){ ctx.fillStyle=this.color; ctx.fillRect(this.x,this.y-this.h/2,this.w,this.h);}
-  rect(){return{x:this.x,y:this.y-this.h/2,w:this.w,h:this.h}}
+  update(dt){ this.x += this.speed * dt * (this.dir === "right" ? 1 : -1); }
+  draw(){
+    ctx.fillStyle=this.color;
+    ctx.fillRect(this.x,this.y-this.h/2+8,this.w,this.h-16);
+    ctx.fillStyle="#ddd";
+    ctx.fillRect(this.x+this.w*0.25,this.y-this.h/2,this.w*0.5,(this.h/2)-4);
+    ctx.fillStyle="#111";
+    ctx.beginPath();
+    ctx.arc(this.x + this.w*0.2,this.y + this.h/2-4,8,0,Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(this.x + this.w*0.8,this.y + this.h/2-4,8,0,Math.PI*2);
+    ctx.fill();
+  }
+  rect(){return {x:this.x,y:this.y-this.h/2,w:this.w,h:this.h};}
+}
+
+class Train{
+  constructor(x,y,speed,dir){
+    this.x=x; this.y=y; this.w=500; this.h=50;
+    this.speed=speed; this.dir=dir;
+  }
+  update(dt){ this.x += this.speed * dt * (this.dir === "right" ? 1 : -1); }
+  draw(){
+    ctx.fillStyle="#ff0000";
+    ctx.fillRect(this.x,this.y-this.h/2,this.w,this.h);
+    ctx.fillStyle="#add8e6";
+    let winW = 40;
+    for(let i=0;i<this.w-60;i+=60){
+      ctx.fillRect(this.x+20+i,this.y-this.h/2+8,winW,this.h-16);
+    }
+    ctx.fillStyle="#aa0000";
+    if(this.dir==="right"){
+      ctx.fillRect(this.x+this.w-60,this.y-this.h/2-5,60,this.h+10);
+    } else {
+      ctx.fillRect(this.x,this.y-this.h/2-5,60,this.h+10);
+    }
+  }
+  rect(){return {x:this.x,y:this.y-this.h/2,w:this.w,h:this.h};}
+}
+
+class Tree{
+  constructor(col,row){
+    this.col=col; this.row=row;
+    this.x = col*CELL + CELL/2;
+    this.y = row*CELL + CELL/2;
+    this.trunkWidth = 12;
+    this.trunkHeight = 12;
+    this.leavesSize = 30;
+  }
+  draw(){
+    ctx.fillStyle="#8b5a2b";
+    ctx.fillRect(this.x-this.trunkWidth/2,this.y+CELL/2-this.trunkHeight,this.trunkWidth,this.trunkHeight);
+    ctx.fillStyle="#228b22";
+    ctx.fillRect(this.x-this.leavesSize/2,this.y+CELL/2-this.trunkHeight-this.leavesSize,this.leavesSize,this.leavesSize);
+  }
 }
 
 class Game{
-  constructor(){this.init();}
+  constructor(){ this.init(); }
   init(){
-    this.player=new Player();
-    this.lanes=[];
-    this.cars=[];
-    this.score=0;
-    this.gameOver=false;
+    this.player = new Player();
+    this.lanes = []; this.cars = []; this.trains = []; this.trees = [];
+    this.trainTimer = 0;
+    this.score = 0;
+    this.gameOver = false;
+    this.pendingReset = false; // avoids immediate repeated regenerations
     this.setDifficulty(difficultyEl.value);
-    this.generateMap(true);  // spawn cars in middle initially
-    scoreEl.textContent="Score: 0";
+    this.generateMap(true);
+    scoreEl.textContent = "Score: 0";
   }
 
   setDifficulty(level){
-    if(level==="easy"){ this.baseSpeed=100; this.spawnGap=1.5; }
-    else if(level==="medium"){ this.baseSpeed=160; this.spawnGap=1.0; }
-    else if(level==="hard"){ 
-      this.baseSpeed=300;  // much faster than before
-      this.spawnGap=0.5;   // cars closer together
-    }
+    if(level==="easy"){ this.baseSpeed = 80; this.spawnGap = 1.5; }
+    else if(level==="medium"){ this.baseSpeed = 130; this.spawnGap = 1.0; }
+    else if(level==="hard"){ this.baseSpeed = 200; this.spawnGap = 0.6; }
   }
 
+  // generateMap: stable trees, capped columns/rows, train row safe selection
   generateMap(initial=false){
-    this.lanes = [];
-    this.cars = [];
+    this.lanes = []; this.cars = []; this.trains = []; this.trees = []; this.trainTimer = 0;
+
+    // Recompute clamped grid sizes in case window changed
+    WIDTH = window.innerWidth;
+    HEIGHT = window.innerHeight;
+    COLUMNS = Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
+    ROWS_VISIBLE = Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
+    canvas.width = WIDTH; canvas.height = HEIGHT;
+
+    // choose train row from 1..ROWS_VISIBLE-2 (only if plenty of rows)
+    let trainRow = (ROWS_VISIBLE > 3) ? randint(1, ROWS_VISIBLE - 2) : -1;
+
     for(let r=0;r<ROWS_VISIBLE-1;r++){
-      let speedFactor = 1 + this.score*0.05; // 5% faster per level
-      let type = (Math.random() < 0.25 + this.score*0.02) ? "safe":"road";
-      let speed=rnd(this.baseSpeed, this.baseSpeed*1.5)*speedFactor;
-      let dir=Math.random()<0.5?"left":"right";
+      let type = "road";
+      if(r === 0){
+        // top row safe to avoid instant re-trigger loops
+        type = "safe";
+      } else if(r === trainRow){
+        type = "train";
+      } else if(Math.random() < 0.15){
+        type = "safe";
+      }
+
+      let speedFactor = 1 + this.score*0.03; // milder speed increase
+      let speed = rnd(this.baseSpeed, this.baseSpeed*1.2) * speedFactor;
+      let dir = Math.random() < 0.5 ? "left" : "right";
+
       this.lanes.push({row:r,type,speed,dir,car:null});
 
-      if(initial && type==="road"){
+      // spawn initial car for roads only
+      if(initial && type === "road"){
         let y = r*CELL + CELL/2;
         let h = 40;
-        let w = randint(80,160);
-        let x = randint(WIDTH/4, 3*WIDTH/4);
+        let w = randint(80,140);
+        let x = randint(Math.floor(WIDTH*0.25), Math.floor(WIDTH*0.75));
         let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
         let car = new Car(x,y,w,h,speed,dir,color,this.lanes[r]);
         this.lanes[r].car = car;
         this.cars.push(car);
       }
+
+      // stable trees for safe lanes (limit count per row)
+      if(type === "safe" && r !== 0){
+        let maxTrees = Math.min(6, Math.max(1, Math.floor(COLUMNS * 0.2)));
+        let tries = 0;
+        // pick up to maxTrees unique columns
+        while(this.trees.filter(t => t.row === r).length < maxTrees && tries < 30){
+          tries++;
+          let c = randint(0, COLUMNS-1);
+          // avoid tree at same col (unique)
+          if(!this.trees.some(t => t.row===r && t.col===c)){
+            this.trees.push(new Tree(c, r));
+          }
+        }
+      }
     }
-    this.lanes.push({row:ROWS_VISIBLE-1,type:"safe",speed:0,dir:"right",car:null});
+
+    // bottom row safe
+    this.lanes.push({row: ROWS_VISIBLE - 1, type:"safe", speed:0, dir:"right", car:null});
   }
 
   update(dt){
     if(this.gameOver) return;
 
+    // spawn cars for empties
     for(let lane of this.lanes){
-      if(lane.type==="road" && !lane.car){
-        this.spawnCarInLane(lane);
-      }
+      if(lane.type==="road" && !lane.car) this.spawnCarInLane(lane);
     }
 
-    for(let c of this.cars) c.update(dt);
-
-    this.cars=this.cars.filter(c=>{
-      let visible = c.x + c.w > -50 && c.x < WIDTH+50 && c.y < (ROWS_VISIBLE-1)*CELL;
-      if(!visible) c.lane.car=null;
+    // update cars and cull quickly (filter in-place created once)
+    for(let i=0;i<this.cars.length;i++) this.cars[i].update(dt);
+    this.cars = this.cars.filter(c => {
+      const visible = c.x + c.w > -200 && c.x < WIDTH + 200;
+      if(!visible && c.lane) c.lane.car = null;
       return visible;
     });
 
-    for(let car of this.cars){
-      let p={x:this.player.x-20,y:this.player.y-20,w:40,h:40};
-      if(this.intersect(car.rect(),p)) this.hit();
+    // check car collisions
+    const pRect = {x:this.player.x-20,y:this.player.y-20,w:40,h:40};
+    for(let i=0;i<this.cars.length;i++){
+      if(this.intersect(this.cars[i].rect(), pRect)){ this.hit(); return; }
+    }
+
+    // spawn trains at interval
+    this.trainTimer += dt;
+    if(this.trainTimer >= 1.5){
+      this.trainTimer = 0;
+      const trainLane = this.lanes.find(l=>l.type==="train");
+      if(trainLane){
+        let y = trainLane.row*CELL + CELL/2;
+        let dir = Math.random() < 0.5 ? "left" : "right";
+        let speed = 450 + Math.random()*200; // reasonable speed
+        let x = dir==="right" ? -600 : WIDTH + 600;
+        this.trains.push(new Train(x,y,speed,dir));
+      }
+    }
+
+    // update trains and cull
+    for(let i=0;i<this.trains.length;i++) this.trains[i].update(dt);
+    this.trains = this.trains.filter(t => (t.x + t.w > -300 && t.x < WIDTH + 300));
+
+    // check train collisions
+    for(let i=0;i<this.trains.length;i++){
+      if(this.intersect(this.trains[i].rect(), pRect)){ this.hit(); return; }
     }
   }
 
   spawnCarInLane(lane){
-    let y = lane.row*CELL+CELL/2;
+    let y = lane.row * CELL + CELL/2;
     let h = 40;
-    let w = randint(80,160);
+    let w = randint(80,140);
     let dir = lane.dir;
-    let x = dir==="right"?-w-10:WIDTH+10;
-    let speed = lane.speed * rnd(0.8,1.4);
+    let x = dir==="right" ? -w-10 : WIDTH + 10;
+    let speed = lane.speed * rnd(0.85, 1.25);
     let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
     let car = new Car(x,y,w,h,speed,dir,color,lane);
     lane.car = car;
@@ -159,11 +298,17 @@ class Game{
   }
 
   onUp(){
-    if(this.player.row===0){
+    if(this.player.row===0 && !this.pendingReset){
+      this.pendingReset = true;
       this.score++;
-      scoreEl.textContent="Score: "+this.score;
-      this.generateMap(true);
-      this.player.reset();
+      scoreEl.textContent = "Score: " + this.score;
+
+      // short delay to avoid generate/reset loops
+      setTimeout(()=>{
+        this.generateMap(true);
+        this.player.reset();
+        this.pendingReset = false;
+      }, 60);
     }
   }
 
@@ -174,61 +319,91 @@ class Game{
   }
 
   intersect(a,b){
-    return !(a.x+a.w<b.x || b.x+b.w<a.x || a.y+a.h<b.y || b.y+b.h<a.y)
+    return !(a.x+a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
   }
 
   draw(){
-    ctx.fillStyle = "#222";
+    // background
+    ctx.fillStyle="#222";
     ctx.fillRect(0,0,WIDTH,HEIGHT);
 
+    // draw lanes
     for(let ln of this.lanes){
-      let y=ln.row*CELL;
-      ctx.fillStyle=ln.type==="safe"?"#8fdc7a":"#444";
-      ctx.fillRect(0,y,WIDTH,CELL);
+      let y = ln.row * CELL;
+      if(ln.type === "safe"){
+        ctx.fillStyle = "#8fdc7a";
+        ctx.fillRect(0,y,WIDTH,CELL);
+        ctx.fillStyle = "#6fb35f";
+        for(let i=0;i<COLUMNS;i++){
+          ctx.fillRect(i*CELL+5, y+5, CELL-10, CELL-10);
+        }
+      } else if(ln.type === "train"){
+        ctx.fillStyle = "#663300";
+        ctx.fillRect(0,y,WIDTH,CELL);
+        ctx.fillStyle = "#444";
+        for(let i=0;i<COLUMNS;i++){
+          ctx.fillRect(i*CELL + 10, y+CELL/2-5, CELL-20, 10);
+        }
+      } else {
+        ctx.fillStyle = "#444";
+        ctx.fillRect(0,y,WIDTH,CELL);
+      }
     }
 
-    for(let c of this.cars) c.draw();
+    // draw trees
+    for(let i=0;i<this.trees.length;i++) this.trees[i].draw();
+
+    // draw cars/trains/player
+    for(let i=0;i<this.cars.length;i++) this.cars[i].draw();
+    for(let i=0;i<this.trains.length;i++) this.trains[i].draw();
     this.player.draw();
   }
 }
 
 function loop(t){
-  const dt=Math.min(0.05,(t-(game.lastTime||t))/1000);
-  game.lastTime=t;
+  const dt = Math.min(0.05, (t - (game.lastTime || t)) / 1000);
+  game.lastTime = t;
   game.update(dt);
-  ctx.clearRect(0,0,WIDTH,HEIGHT);
   game.draw();
   requestAnimationFrame(loop);
 }
 
-game=new Game();
+// create game
+game = new Game();
 requestAnimationFrame(loop);
 
-window.addEventListener('resize',()=>{
-  WIDTH = window.innerWidth;
-  HEIGHT = window.innerHeight;
-  canvas.width = WIDTH;
-  canvas.height = HEIGHT;
-  COLUMNS = Math.floor(WIDTH/CELL);
-  ROWS_VISIBLE = Math.floor(HEIGHT/CELL);
-  game.generateMap(true);
-  game.player.reset();
+// handle resize: recompute grid and regenerate map once
+let resizeTimer = null;
+window.addEventListener("resize", ()=>{
+  // debounce resize to avoid thrashing
+  if(resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(()=>{
+    WIDTH = window.innerWidth;
+    HEIGHT = window.innerHeight;
+    canvas.width = WIDTH;
+    canvas.height = HEIGHT;
+    COLUMNS = Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
+    ROWS_VISIBLE = Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
+    game.generateMap(true);
+    game.player.reset();
+    resizeTimer = null;
+  }, 150);
 });
 
-let keysPressed = {};
-document.addEventListener("keydown", e => {
-  if(keysPressed[e.key]) return;
-  keysPressed[e.key] = true;
+let keys={};
+document.addEventListener("keydown", e=>{
+  if(keys[e.key]) return;
+  keys[e.key]=true;
   if(e.key==="ArrowUp"||e.key==="w") game.player.move("up");
   if(e.key==="ArrowDown"||e.key==="s") game.player.move("down");
   if(e.key==="ArrowLeft"||e.key==="a") game.player.move("left");
   if(e.key==="ArrowRight"||e.key==="d") game.player.move("right");
 });
-document.addEventListener("keyup", e => { keysPressed[e.key] = false; });
+document.addEventListener("keyup", e=> keys[e.key]=false );
 
-document.getElementById("restart").onclick=()=>{
+document.getElementById("restart").onclick = ()=>{
   game.setDifficulty(difficultyEl.value);
-  game=new Game();
+  game = new Game();
 };
 
 difficultyEl.addEventListener("change", ()=>{
