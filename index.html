@@ -3,17 +3,23 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Mini Crossy Road — With Trains and Trees (Stable)</title>
+<title>Mini Crossy Road — With Coins, Shop, Skins & Leaderboard</title>
 <style>
 html,body{height:100%;margin:0;font-family:Inter,Segoe UI,system-ui,Arial;overflow:hidden;background:#222;}
 canvas{display:block;}
 #hud{position:absolute;top:10px;left:10px;color:#fff;font-weight:700;font-size:18px;z-index:10;}
 #controls{position:absolute;top:10px;right:10px;z-index:10;}
 #controls select,#controls button{padding:6px 10px;margin-left:5px;border-radius:6px;border:none;background:#444;color:#fff;cursor:pointer;}
+#shopModal,#skinModal,#leaderboardModal{display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#333;color:#fff;padding:20px;border-radius:10px;z-index:20;}
+#shopModal button,#skinModal button,#leaderboardModal button{padding:6px 10px;margin-top:10px;border-radius:6px;border:none;background:#444;color:#fff;cursor:pointer;}
+#skinOptions{margin-top:10px;display:flex;flex-wrap:wrap;gap:10px;}
+#leaderboardList{margin-top:10px;}
+#googleSignInButton{position:absolute;top:50px;right:10px;z-index:15;}
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-<div id="hud">Score: 0</div>
+<div id="hud">Score: 0 | Coins: 0</div>
 <div id="controls">
   <select id="difficulty">
     <option value="easy">Easy</option>
@@ -21,7 +27,31 @@ canvas{display:block;}
     <option value="hard">Hard</option>
   </select>
   <button id="restart">Restart</button>
+  <button id="shopButton">Shop</button>
+  <button id="switchSkin">Switch Skin</button>
+  <button id="leaderboardButton">Leaderboard</button>
 </div>
+
+<div id="shopModal">
+  <div>Mystery Box (10 coins)</div>
+  <button id="buyBox">Open Box</button>
+  <div id="newSkin"></div>
+  <button id="closeShop">Close</button>
+</div>
+
+<div id="skinModal">
+  <div>Select Your Skin:</div>
+  <div id="skinOptions"></div>
+  <button id="closeSkinMenu">Close</button>
+</div>
+
+<div id="leaderboardModal">
+  <div>Top Scores</div>
+  <div id="leaderboardList"></div>
+  <button id="closeLeaderboard">Close</button>
+</div>
+
+<div id="googleSignInButton"></div>
 <canvas id="c"></canvas>
 <script>
 const canvas=document.getElementById('c');
@@ -32,25 +62,51 @@ const difficultyEl=document.getElementById('difficulty');
 let CELL=60;
 let WIDTH=window.innerWidth;
 let HEIGHT=window.innerHeight;
-// clamp grid sizes so huge screens don't create enormous grids
-const MAX_COLUMNS = 30;    // max number of columns to allow (keeps trees/cells reasonable)
-const MIN_COLUMNS = 6;     // minimum columns
+const MAX_COLUMNS = 30;
+const MIN_COLUMNS = 6;
 const MAX_ROWS = 20;
 const MIN_ROWS = 6;
-
 let COLUMNS=Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
 let ROWS_VISIBLE=Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
-
 canvas.width=WIDTH;
 canvas.height=HEIGHT;
-
-let game;
 
 function rnd(a,b){return Math.random()*(b-a)+a}
 function randint(a,b){return Math.floor(rnd(a,b+1))}
 
+// -------------------- Load/Save Progress --------------------
+let ownedSkins=["#2b8a3e"];
+let leaderboard=[];
+function loadProgress(){
+  const data = localStorage.getItem("miniCrossySave");
+  const lb = localStorage.getItem("miniCrossyLeaderboard");
+  if(lb) leaderboard=JSON.parse(lb);
+  if(data){
+    try { 
+      const obj = JSON.parse(data); 
+      if(obj.ownedSkins) ownedSkins=obj.ownedSkins;
+      return obj;
+    } catch(e) {}
+  }
+  return null;
+}
+function saveProgress(){
+  const obj = {
+    coins: game.coins,
+    skinColor: game.player.color,
+    ownedSkins: ownedSkins
+  };
+  localStorage.setItem("miniCrossySave", JSON.stringify(obj));
+}
+function saveLeaderboard(){
+  leaderboard.sort((a,b)=>b-a);
+  if(leaderboard.length>5) leaderboard.length=5;
+  localStorage.setItem("miniCrossyLeaderboard", JSON.stringify(leaderboard));
+}
+
+// -------------------- Classes --------------------
 class Player{
-  constructor(){this.reset();}
+  constructor(){ this.reset(); this.color="#2b8a3e"; this.ghostPath=[]; }
   reset(){
     this.col=Math.floor(COLUMNS/2);
     this.row=ROWS_VISIBLE-1;
@@ -58,17 +114,24 @@ class Player{
     this.y=this.row*CELL+CELL/2;
     this.size=40;
     this.alive=true;
+    this.ghostPath=[];
   }
   draw(){
-    ctx.fillStyle="#2b8a3e";
+    // draw ghost
+    if(this.ghostPath.length>0){
+      ctx.fillStyle="rgba(255,255,255,0.3)";
+      for(let p of this.ghostPath) ctx.fillRect(p.x-20,p.y-20,40,40);
+    }
+    ctx.fillStyle=this.color;
     ctx.fillRect(this.x-20,this.y-20,40,40);
-    // eyes
     ctx.fillStyle="#fff";
     ctx.fillRect(this.x-10,this.y-10,6,6);
     ctx.fillRect(this.x+4,this.y-10,6,6);
     ctx.fillStyle="#000";
     ctx.fillRect(this.x-8,this.y-8,2,2);
     ctx.fillRect(this.x+6,this.y-8,2,2);
+    this.ghostPath.push({x:this.x,y:this.y});
+    if(this.ghostPath.length>ROWS_VISIBLE*2) this.ghostPath.shift();
   }
   move(d){
     if(!this.alive) return;
@@ -77,12 +140,9 @@ class Player{
     if(d==="down"&&this.row<ROWS_VISIBLE-1) newRow++;
     if(d==="left"&&this.col>0) newCol--;
     if(d==="right"&&this.col<COLUMNS-1) newCol++;
-
-    // Tree collision (trees are stored by grid col/row)
     for(let tree of game.trees){
-      if(tree.row===newRow && tree.col===newCol) return; // blocked
+      if(tree.row===newRow && tree.col===newCol) return;
     }
-
     this.col=newCol;
     this.row=newRow;
     this.x=this.col*CELL+CELL/2;
@@ -92,304 +152,200 @@ class Player{
 }
 
 class Car{
-  constructor(x,y,w,h,s,dir,c,lane){
-    this.x=x;this.y=y;this.w=w;this.h=h;
-    this.speed=s;this.dir=dir;this.color=c;
-    this.lane=lane;
-  }
-  update(dt){ this.x += this.speed * dt * (this.dir === "right" ? 1 : -1); }
+  constructor(x,y,w,h,s,dir,c,lane){this.x=x;this.y=y;this.w=w;this.h=h;this.speed=s;this.dir=dir;this.color=c;this.lane=lane;}
+  update(dt){ this.x += this.speed*dt*(this.dir==="right"?1:-1); }
   draw(){
     ctx.fillStyle=this.color;
     ctx.fillRect(this.x,this.y-this.h/2+8,this.w,this.h-16);
     ctx.fillStyle="#ddd";
     ctx.fillRect(this.x+this.w*0.25,this.y-this.h/2,this.w*0.5,(this.h/2)-4);
     ctx.fillStyle="#111";
-    ctx.beginPath();
-    ctx.arc(this.x + this.w*0.2,this.y + this.h/2-4,8,0,Math.PI*2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(this.x + this.w*0.8,this.y + this.h/2-4,8,0,Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(this.x + this.w*0.2,this.y + this.h/2-4,8,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(this.x + this.w*0.8,this.y + this.h/2-4,8,0,Math.PI*2); ctx.fill();
   }
   rect(){return {x:this.x,y:this.y-this.h/2,w:this.w,h:this.h};}
 }
 
 class Train{
-  constructor(x,y,speed,dir){
-    this.x=x; this.y=y; this.w=500; this.h=50;
-    this.speed=speed; this.dir=dir;
-  }
-  update(dt){ this.x += this.speed * dt * (this.dir === "right" ? 1 : -1); }
+  constructor(x,y,speed,dir){this.x=x; this.y=y; this.w=500; this.h=50; this.speed=speed; this.dir=dir;}
+  update(dt){ this.x += this.speed*dt*(this.dir==="right"?1:-1);}
   draw(){
     ctx.fillStyle="#ff0000";
     ctx.fillRect(this.x,this.y-this.h/2,this.w,this.h);
     ctx.fillStyle="#add8e6";
     let winW = 40;
-    for(let i=0;i<this.w-60;i+=60){
-      ctx.fillRect(this.x+20+i,this.y-this.h/2+8,winW,this.h-16);
-    }
+    for(let i=0;i<this.w-60;i+=60) ctx.fillRect(this.x+20+i,this.y-this.h/2+8,winW,this.h-16);
     ctx.fillStyle="#aa0000";
-    if(this.dir==="right"){
-      ctx.fillRect(this.x+this.w-60,this.y-this.h/2-5,60,this.h+10);
-    } else {
-      ctx.fillRect(this.x,this.y-this.h/2-5,60,this.h+10);
-    }
+    if(this.dir==="right") ctx.fillRect(this.x+this.w-60,this.y-this.h/2-5,60,this.h+10);
+    else ctx.fillRect(this.x,this.y-this.h/2-5,60,this.h+10);
   }
   rect(){return {x:this.x,y:this.y-this.h/2,w:this.w,h:this.h};}
 }
 
 class Tree{
-  constructor(col,row){
-    this.col=col; this.row=row;
-    this.x = col*CELL + CELL/2;
-    this.y = row*CELL + CELL/2;
-    this.trunkWidth = 12;
-    this.trunkHeight = 12;
-    this.leavesSize = 30;
-  }
-  draw(){
-    ctx.fillStyle="#8b5a2b";
-    ctx.fillRect(this.x-this.trunkWidth/2,this.y+CELL/2-this.trunkHeight,this.trunkWidth,this.trunkHeight);
-    ctx.fillStyle="#228b22";
-    ctx.fillRect(this.x-this.leavesSize/2,this.y+CELL/2-this.trunkHeight-this.leavesSize,this.leavesSize,this.leavesSize);
-  }
+  constructor(col,row){this.col=col; this.row=row; this.x = col*CELL + CELL/2; this.y = row*CELL + CELL/2; this.trunkWidth = 12; this.trunkHeight = 12; this.leavesSize = 30;}
+  draw(){ ctx.fillStyle="#8b5a2b"; ctx.fillRect(this.x-this.trunkWidth/2,this.y+CELL/2-this.trunkHeight,this.trunkWidth,this.trunkHeight); ctx.fillStyle="#228b22"; ctx.fillRect(this.x-this.leavesSize/2,this.y+CELL/2-this.trunkHeight-this.leavesSize,this.leavesSize,this.leavesSize);}
 }
 
+class Coin{
+  constructor(col,row){ this.col=col; this.row=row; this.x = col*CELL+CELL/2; this.y = row*CELL+CELL/2; this.radius = 10;}
+  draw(){ ctx.fillStyle="gold"; ctx.beginPath(); ctx.arc(this.x,this.y,this.radius,0,Math.PI*2); ctx.fill();}
+  rect(){return {x:this.x-this.radius,y:this.y-this.radius,w:this.radius*2,h:this.radius*2};}
+}
+
+// -------------------- Game --------------------
 class Game{
-  constructor(){ this.init(); }
-  init(){
+  constructor(){
+    const saved = loadProgress();
+    this.coins = saved?.coins || 0;
     this.player = new Player();
-    this.lanes = []; this.cars = []; this.trains = []; this.trees = [];
-    this.trainTimer = 0;
-    this.score = 0;
-    this.gameOver = false;
-    this.pendingReset = false; // avoids immediate repeated regenerations
+    if(saved?.skinColor) this.player.color = saved.skinColor;
+    this.init();
+  }
+  init(){
+    this.lanes=[]; this.cars=[]; this.trains=[]; this.trees=[]; this.coinsArr=[];
+    this.trainTimer=0; this.score=0; this.gameOver=false; this.pendingReset=false;
     this.setDifficulty(difficultyEl.value);
     this.generateMap(true);
-    scoreEl.textContent = "Score: 0";
+    this.updateHUD();
   }
-
   setDifficulty(level){
-    if(level==="easy"){ this.baseSpeed = 80; this.spawnGap = 1.5; }
-    else if(level==="medium"){ this.baseSpeed = 130; this.spawnGap = 1.0; }
-    else if(level==="hard"){ this.baseSpeed = 200; this.spawnGap = 0.6; }
+    if(level==="easy"){ this.baseSpeed=80; this.spawnGap=1.5;}
+    else if(level==="medium"){ this.baseSpeed=130; this.spawnGap=1.0;}
+    else if(level==="hard"){ this.baseSpeed=200; this.spawnGap=0.6;}
   }
 
-  // generateMap: stable trees, capped columns/rows, train row safe selection
   generateMap(initial=false){
-    this.lanes = []; this.cars = []; this.trains = []; this.trees = []; this.trainTimer = 0;
+    this.lanes=[]; this.cars=[]; this.trains=[]; this.trees=[]; this.coinsArr=[]; this.trainTimer=0;
+    WIDTH = window.innerWidth; HEIGHT = window.innerHeight;
+    COLUMNS=Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
+    ROWS_VISIBLE=Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
+    canvas.width=WIDTH; canvas.height=HEIGHT;
 
-    // Recompute clamped grid sizes in case window changed
-    WIDTH = window.innerWidth;
-    HEIGHT = window.innerHeight;
-    COLUMNS = Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
-    ROWS_VISIBLE = Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
-    canvas.width = WIDTH; canvas.height = HEIGHT;
-
-    // choose train row from 1..ROWS_VISIBLE-2 (only if plenty of rows)
-    let trainRow = (ROWS_VISIBLE > 3) ? randint(1, ROWS_VISIBLE - 2) : -1;
+    let trainRow = (ROWS_VISIBLE>3)?randint(1,ROWS_VISIBLE-2):-1;
 
     for(let r=0;r<ROWS_VISIBLE-1;r++){
-      let type = "road";
-      if(r === 0){
-        // top row safe to avoid instant re-trigger loops
-        type = "safe";
-      } else if(r === trainRow){
-        type = "train";
-      } else if(Math.random() < 0.15){
-        type = "safe";
-      }
+      let type="road";
+      if(r===0) type="safe";
+      else if(r===trainRow) type="train";
+      else if(Math.random()<0.15) type="safe";
 
-      let speedFactor = 1 + this.score*0.03; // milder speed increase
-      let speed = rnd(this.baseSpeed, this.baseSpeed*1.2) * speedFactor;
-      let dir = Math.random() < 0.5 ? "left" : "right";
-
+      let speedFactor = 1+this.score*0.03;
+      let speed = rnd(this.baseSpeed,this.baseSpeed*1.2)*speedFactor;
+      let dir = Math.random()<0.5?"left":"right";
       this.lanes.push({row:r,type,speed,dir,car:null});
 
-      // spawn initial car for roads only
-      if(initial && type === "road"){
-        let y = r*CELL + CELL/2;
-        let h = 40;
-        let w = randint(80,140);
-        let x = randint(Math.floor(WIDTH*0.25), Math.floor(WIDTH*0.75));
-        let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
-        let car = new Car(x,y,w,h,speed,dir,color,this.lanes[r]);
-        this.lanes[r].car = car;
-        this.cars.push(car);
+      if(initial && type==="road"){
+        this.spawnCarInLane(this.lanes[r], true);
       }
 
-      // stable trees for safe lanes (limit count per row)
-      if(type === "safe" && r !== 0){
-        let maxTrees = Math.min(6, Math.max(1, Math.floor(COLUMNS * 0.2)));
-        let tries = 0;
-        // pick up to maxTrees unique columns
-        while(this.trees.filter(t => t.row === r).length < maxTrees && tries < 30){
-          tries++;
-          let c = randint(0, COLUMNS-1);
-          // avoid tree at same col (unique)
-          if(!this.trees.some(t => t.row===r && t.col===c)){
-            this.trees.push(new Tree(c, r));
-          }
+      if(type==="safe" && r!==0){
+        let maxTrees=Math.min(6,Math.max(1,Math.floor(COLUMNS*0.2))), tries=0;
+        while(this.trees.filter(t=>t.row===r).length<maxTrees && tries<30){
+          tries++; let c=randint(0,COLUMNS-1);
+          if(!this.trees.some(t=>t.row===r && t.col===c)) this.trees.push(new Tree(c,r));
         }
       }
     }
 
-    // bottom row safe
-    this.lanes.push({row: ROWS_VISIBLE - 1, type:"safe", speed:0, dir:"right", car:null});
+    this.lanes.push({row:ROWS_VISIBLE-1,type:"safe",speed:0,dir:"right",car:null});
+
+    const roadRows = this.lanes.filter(l=>l.type==="road").map(l=>l.row);
+    for(let i=0;i<6;i++){
+      let r = roadRows[randint(0,roadRows.length-1)];
+      let c = randint(0,COLUMNS-1);
+      this.coinsArr.push(new Coin(c,r));
+    }
+  }
+
+  spawnCarInLane(lane, fromMiddle=false){
+    let y = lane.row*CELL + CELL/2;
+    let h = 40;
+    let w = randint(80,140);
+    let dir = lane.dir;
+    let speed = lane.speed * rnd(0.85,1.25);
+    let x;
+    if(fromMiddle){
+        x = WIDTH/2 - w/2;
+    } else {
+        x = dir==="right" ? -w-10 : WIDTH+10;
+    }
+    let color=["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
+    let car = new Car(x, y, w, h, speed, dir, color, lane);
+    lane.car = car;
+    this.cars.push(car);
   }
 
   update(dt){
     if(this.gameOver) return;
 
-    // spawn cars for empties
     for(let lane of this.lanes){
-      if(lane.type==="road" && !lane.car) this.spawnCarInLane(lane);
+      if(lane.type==="road" && !lane.car){
+        this.spawnCarInLane(lane, this.score>=1);
+      }
     }
 
-    // update cars and cull quickly (filter in-place created once)
     for(let i=0;i<this.cars.length;i++) this.cars[i].update(dt);
-    this.cars = this.cars.filter(c => {
-      const visible = c.x + c.w > -200 && c.x < WIDTH + 200;
-      if(!visible && c.lane) c.lane.car = null;
-      return visible;
-    });
+    this.cars = this.cars.filter(c=>{const visible=c.x+c.w>-200 && c.x<WIDTH+200; if(!visible && c.lane) c.lane.car=null; return visible;});
 
-    // check car collisions
     const pRect = {x:this.player.x-20,y:this.player.y-20,w:40,h:40};
-    for(let i=0;i<this.cars.length;i++){
-      if(this.intersect(this.cars[i].rect(), pRect)){ this.hit(); return; }
+    for(let i=0;i<this.cars.length;i++){ if(this.intersect(this.cars[i].rect(),pRect)){ this.hit(); return; } }
+    for(let i=0;i<this.trains.length;i++){ this.trains[i].update(dt); }
+    this.trains = this.trains.filter(t=>(t.x+t.w>-300 && t.x<WIDTH+300));
+    for(let i=0;i<this.trains.length;i++){ if(this.intersect(this.trains[i].rect(),pRect)){ this.hit(); return; } }
+
+    for(let i=this.coinsArr.length-1;i>=0;i--){
+      if(this.intersect(this.coinsArr[i].rect(),pRect)){
+        this.coins++; saveProgress(); this.updateHUD();
+        this.coinsArr.splice(i,1);
+      }
     }
 
-    // spawn trains at interval
     this.trainTimer += dt;
-    if(this.trainTimer >= 1.5){
-      this.trainTimer = 0;
-      const trainLane = this.lanes.find(l=>l.type==="train");
+    if(this.trainTimer >=1.5){
+      this.trainTimer=0;
+      const trainLane=this.lanes.find(l=>l.type==="train");
       if(trainLane){
         let y = trainLane.row*CELL + CELL/2;
-        let dir = Math.random() < 0.5 ? "left" : "right";
-        let speed = 450 + Math.random()*200; // reasonable speed
-        let x = dir==="right" ? -600 : WIDTH + 600;
+        let dir = Math.random()<0.5?"left":"right";
+        let speed = 450 + Math.random()*200;
+        let x = dir==="right"?-600:WIDTH+600;
         this.trains.push(new Train(x,y,speed,dir));
       }
     }
-
-    // update trains and cull
-    for(let i=0;i<this.trains.length;i++) this.trains[i].update(dt);
-    this.trains = this.trains.filter(t => (t.x + t.w > -300 && t.x < WIDTH + 300));
-
-    // check train collisions
-    for(let i=0;i<this.trains.length;i++){
-      if(this.intersect(this.trains[i].rect(), pRect)){ this.hit(); return; }
-    }
   }
 
-  spawnCarInLane(lane){
-    let y = lane.row * CELL + CELL/2;
-    let h = 40;
-    let w = randint(80,140);
-    let dir = lane.dir;
-    let x = dir==="right" ? -w-10 : WIDTH + 10;
-    let speed = lane.speed * rnd(0.85, 1.25);
-    let color = ["#f44","#4f4","#48f","#fa0","#a0f"][randint(0,4)];
-    let car = new Car(x,y,w,h,speed,dir,color,lane);
-    lane.car = car;
-    this.cars.push(car);
-  }
-
-  onUp(){
-    if(this.player.row===0 && !this.pendingReset){
-      this.pendingReset = true;
-      this.score++;
-      scoreEl.textContent = "Score: " + this.score;
-
-      // short delay to avoid generate/reset loops
-      setTimeout(()=>{
-        this.generateMap(true);
-        this.player.reset();
-        this.pendingReset = false;
-      }, 60);
-    }
-  }
-
-  hit(){
-    this.player.alive=false;
-    this.gameOver=true;
-    scoreEl.textContent="Hit! Score: "+this.score+" — Restart to play again";
-  }
-
-  intersect(a,b){
-    return !(a.x+a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
-  }
+  onUp(){ if(this.player.row===0 && !this.pendingReset){ this.pendingReset=true; this.score++; this.generateMap(true); this.player.reset(); this.pendingReset=false; } }
+  hit(){ this.player.alive=false; this.gameOver=true; scoreEl.textContent="Hit! Score:"+this.score+" — Restart to play again"; leaderboard.push(this.score); saveLeaderboard(); showLeaderboard(); }
+  intersect(a,b){ return !(a.x+a.w<b.x || b.x+b.w<a.x || a.y+a.h<b.y || b.y+b.h<a.y); }
 
   draw(){
-    // background
-    ctx.fillStyle="#222";
-    ctx.fillRect(0,0,WIDTH,HEIGHT);
+    // Draw background
+    ctx.fillStyle="#87ceeb"; ctx.fillRect(0,0,WIDTH,HEIGHT);
+    for(let i=0;i<10;i++){ ctx.fillStyle="rgba(255,255,255,0.7)"; ctx.beginPath(); ctx.arc((Date.now()*0.05+i*150)%WIDTH,50+i*30,30,0,Math.PI*2); ctx.fill(); }
 
-    // draw lanes
     for(let ln of this.lanes){
-      let y = ln.row * CELL;
-      if(ln.type === "safe"){
-        ctx.fillStyle = "#8fdc7a";
-        ctx.fillRect(0,y,WIDTH,CELL);
-        ctx.fillStyle = "#6fb35f";
-        for(let i=0;i<COLUMNS;i++){
-          ctx.fillRect(i*CELL+5, y+5, CELL-10, CELL-10);
-        }
-      } else if(ln.type === "train"){
-        ctx.fillStyle = "#663300";
-        ctx.fillRect(0,y,WIDTH,CELL);
-        ctx.fillStyle = "#444";
-        for(let i=0;i<COLUMNS;i++){
-          ctx.fillRect(i*CELL + 10, y+CELL/2-5, CELL-20, 10);
-        }
-      } else {
-        ctx.fillStyle = "#444";
-        ctx.fillRect(0,y,WIDTH,CELL);
-      }
+      let y=ln.row*CELL;
+      if(ln.type==="safe"){ ctx.fillStyle="#8fdc7a"; ctx.fillRect(0,y,WIDTH,CELL); ctx.fillStyle="#6fb35f"; for(let i=0;i<COLUMNS;i++) ctx.fillRect(i*CELL+5,y+5,CELL-10,CELL-10);}
+      else if(ln.type==="train"){ ctx.fillStyle="#663300"; ctx.fillRect(0,y,WIDTH,CELL); ctx.fillStyle="#444"; for(let i=0;i<COLUMNS;i++) ctx.fillRect(i*CELL+10,y+CELL/2-5,CELL-20,10);}
+      else { ctx.fillStyle="#444"; ctx.fillRect(0,y,WIDTH,CELL); }
     }
-
-    // draw trees
-    for(let i=0;i<this.trees.length;i++) this.trees[i].draw();
-
-    // draw cars/trains/player
-    for(let i=0;i<this.cars.length;i++) this.cars[i].draw();
-    for(let i=0;i<this.trains.length;i++) this.trains[i].draw();
+    for(let t of this.trees) t.draw();
+    for(let c of this.cars) c.draw();
+    for(let t of this.trains) t.draw();
+    for(let coin of this.coinsArr) coin.draw();
     this.player.draw();
   }
+
+  updateHUD(){ scoreEl.textContent=`Score: ${this.score} | Coins: ${this.coins}`;}
 }
 
-function loop(t){
-  const dt = Math.min(0.05, (t - (game.lastTime || t)) / 1000);
-  game.lastTime = t;
-  game.update(dt);
-  game.draw();
-  requestAnimationFrame(loop);
-}
-
-// create game
-game = new Game();
+// -------------------- Game Loop --------------------
+let game = new Game();
+function loop(t){ const dt=Math.min(0.05,(t-(game.lastTime||t))/1000); game.lastTime=t; game.update(dt); game.draw(); requestAnimationFrame(loop);}
 requestAnimationFrame(loop);
 
-// handle resize: recompute grid and regenerate map once
-let resizeTimer = null;
-window.addEventListener("resize", ()=>{
-  // debounce resize to avoid thrashing
-  if(resizeTimer) clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(()=>{
-    WIDTH = window.innerWidth;
-    HEIGHT = window.innerHeight;
-    canvas.width = WIDTH;
-    canvas.height = HEIGHT;
-    COLUMNS = Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
-    ROWS_VISIBLE = Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
-    game.generateMap(true);
-    game.player.reset();
-    resizeTimer = null;
-  }, 150);
-});
-
+// -------------------- Input --------------------
 let keys={};
 document.addEventListener("keydown", e=>{
   if(keys[e.key]) return;
@@ -399,15 +355,76 @@ document.addEventListener("keydown", e=>{
   if(e.key==="ArrowLeft"||e.key==="a") game.player.move("left");
   if(e.key==="ArrowRight"||e.key==="d") game.player.move("right");
 });
-document.addEventListener("keyup", e=> keys[e.key]=false );
+document.addEventListener("keyup", e=>keys[e.key]=false );
 
-document.getElementById("restart").onclick = ()=>{
-  game.setDifficulty(difficultyEl.value);
+document.getElementById("restart").onclick=()=>{
+  const coinsSaved = game.coins;
+  const skinSaved = game.player.color;
   game = new Game();
-};
+  game.coins = coinsSaved; game.player.color = skinSaved; game.updateHUD();
+}
 
-difficultyEl.addEventListener("change", ()=>{
-  game.setDifficulty(difficultyEl.value);
+difficultyEl.addEventListener("change", ()=>{game.setDifficulty(difficultyEl.value);});
+
+// -------------------- Shop --------------------
+document.getElementById("shopButton").onclick = ()=> document.getElementById("shopModal").style.display="block";
+document.getElementById("closeShop").onclick = ()=> document.getElementById("shopModal").style.display="none";
+document.getElementById("buyBox").onclick = ()=>{
+  if(game.coins>=10){
+    game.coins-=10;
+    const colors = ["#2b8a3e","#8b0000","#ff69b4","#1e90ff","#ffa500","#4b0082","#00ced1","#ff1493","#228b22"];
+    const newSkin=colors[randint(0,colors.length-1)];
+    if(!ownedSkins.includes(newSkin)) ownedSkins.push(newSkin);
+    game.player.color=newSkin;
+    saveProgress(); game.updateHUD(); document.getElementById("newSkin").textContent="New skin!";
+  } else document.getElementById("newSkin").textContent="Not enough coins!";
+}
+
+// -------------------- Skin Menu --------------------
+const skinModal=document.getElementById("skinModal");
+const skinOptions=document.getElementById("skinOptions");
+document.getElementById("switchSkin").onclick=()=>{
+  skinOptions.innerHTML="";
+  for(let s of ownedSkins){
+    let b=document.createElement("button"); 
+    b.style.background=s; b.style.width="40px"; b.style.height="40px"; 
+    b.onclick=()=>{game.player.color=s; skinModal.style.display="none"; saveProgress();}; 
+    skinOptions.appendChild(b);
+  }
+  skinModal.style.display="block";
+}
+document.getElementById("closeSkinMenu").onclick=()=>skinModal.style.display="none";
+
+// -------------------- Leaderboard --------------------
+const leaderboardModal=document.getElementById("leaderboardModal");
+document.getElementById("leaderboardButton").onclick=()=>showLeaderboard();
+document.getElementById("closeLeaderboard").onclick=()=>leaderboardModal.style.display="none";
+
+function showLeaderboard(){
+  const lbDiv=document.getElementById("leaderboardList");
+  lbDiv.innerHTML="";
+  leaderboard.sort((a,b)=>b-a);
+  for(let i=0;i<Math.min(5,leaderboard.length);i++){
+    let d=document.createElement("div"); d.textContent=`#${i+1}: ${leaderboard[i]}`; lbDiv.appendChild(d);
+  }
+  leaderboardModal.style.display="block";
+}
+
+// -------------------- Google Sign-In --------------------
+function handleCredentialResponse(response){ console.log("Google ID token:", response.credential); }
+window.onload = () => {
+  google.accounts.id.initialize({client_id:"PUT_YOUR_GOOGLE_CLIENT_ID_HERE",callback:handleCredentialResponse});
+  google.accounts.id.renderButton(document.getElementById("googleSignInButton"),{theme:"outline",size:"large",text:"signin_with"});
+}
+
+// -------------------- Resize --------------------
+window.addEventListener("resize", ()=>{
+  WIDTH=window.innerWidth; HEIGHT=window.innerHeight;
+  canvas.width=WIDTH; canvas.height=HEIGHT;
+  COLUMNS=Math.max(MIN_COLUMNS, Math.min(Math.floor(WIDTH/CELL), MAX_COLUMNS));
+  ROWS_VISIBLE=Math.max(MIN_ROWS, Math.min(Math.floor(HEIGHT/CELL), MAX_ROWS));
+  game.generateMap(true);
+  game.player.reset();
 });
 </script>
 </body>
